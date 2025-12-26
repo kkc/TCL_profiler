@@ -364,17 +364,25 @@ proc ::profiler::export_csv {filename} {
 
 # 自動 instrument 所有 user-defined procs
 proc ::profiler::instrument_all {} {
-    foreach proc_name [info procs] {
+    # 重要：必須使用 ::* 來獲取全域 namespace 的 procs
+    # 否則會獲取當前 namespace (::profiler::) 的 procs
+    foreach proc_name [info procs ::*] {
+        # 移除 :: 前綴
+        set proc_name [string range $proc_name 2 end]
+
         # 跳過系統和 profiler 自己的 proc
-        if {[string match "::profiler::*" $proc_name]} continue
+        if {[string match "profiler::*" $proc_name]} continue
         if {[string match "__orig_*" $proc_name]} continue
         if {[string match "tcl*" $proc_name]} continue
         if {[string match "prof_*" $proc_name]} continue
-        if {$proc_name in {unknown auto_load auto_import auto_execok auto_qualify}} continue
-        
+        # 跳過 profiler 內部會使用的 procs (避免無限遞迴)
+        if {$proc_name in {clock history}} continue
+        # 跳過其他系統 procs
+        if {$proc_name in {unknown auto_load auto_import auto_execok auto_qualify auto_load_index}} continue
+
         instrument $proc_name
     }
-    
+
     puts "Instrumented all user-defined procs"
 }
 
