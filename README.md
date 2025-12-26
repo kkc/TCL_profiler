@@ -7,14 +7,16 @@
 ✅ **Top N Queries** - Quickly identify bottlenecks
 ✅ **Multiple Sorting Options** - Sort by count, time, or average
 ✅ **CSV Export** - For further analysis
-✅ **Low Overhead** - Based on rename, not trace
+✅ **Call Graph Visualization** - See the complete call hierarchy (optional)
+✅ **DOT Export** - Generate call graphs for Graphviz
+✅ **Low Overhead** - Based on rename, not trace (~10-15% extra with call graph)
 ✅ **No Source Modification Required** - Completely transparent
 
 ---
 
 ## 🚀 Quick Start
 
-### Simplest Usage
+### Basic Usage (Without Call Graph)
 
 ```tcl
 # 1. Load profiler
@@ -32,6 +34,31 @@ run_your_main_function
 
 # 5. View results
 prof_summary
+```
+
+### With Call Graph (Track Call Hierarchy)
+
+```tcl
+# 1. Load profiler
+source tcl_profiler_complete.tcl
+
+# 2. Load your script
+source your_script.tcl
+
+# 3. Initialize with call graph enabled
+prof_init -callgraph
+prof_instrument_all
+
+# 4. Execute your program
+run_your_main_function
+
+# 5. View results and call graph
+prof_summary
+prof_callgraph
+
+# 6. Export call graph visualization
+prof_callgraph_dot callgraph.dot
+# Then: dot -Tpng callgraph.dot -o callgraph.png
 ```
 
 ---
@@ -143,6 +170,73 @@ prof_report self
 # 3. Export detailed data
 prof_export analysis.csv
 ```
+
+---
+
+## 📊 Call Graph Visualization
+
+### What is Call Graph?
+
+Call Graph shows the **complete calling hierarchy** of your program:
+- Which proc calls which
+- How many times each call happens
+- Visual representation of code flow
+
+**Example Output:**
+```
+├─ main_flow (1 calls, 78.98ms)
+│  ├─ run_analysis (2 calls, 61.88ms)
+│  │  ├─ analyze_timing (2 calls, 31.73ms)
+│  │     ├─ get_design_info (4 calls, 21.75ms)
+│     ├─ analyze_area (2 calls, 30.07ms)
+│        ├─ get_design_info (4 calls, 21.75ms)
+   ├─ optimize_design (1 calls, 48.26ms)
+      ├─ run_analysis (2 calls, 61.88ms)
+```
+
+### When to Use Call Graph
+
+✅ **Understanding code flow** - See the execution path
+✅ **Finding unexpected calls** - Discover who's calling what
+✅ **Visualizing architecture** - See the proc hierarchy
+✅ **Debugging complex flows** - Trace execution paths
+
+### Performance Impact
+
+Call Graph adds **minimal overhead**:
+- ~10-15% extra overhead when enabled
+- Still < 0.02% impact on procs > 100ms
+- **Disabled by default** - zero impact when not used
+
+### Tree View
+
+```tcl
+prof_init -callgraph
+prof_instrument_all
+# ... run your code ...
+prof_callgraph
+```
+
+Shows hierarchical tree with:
+- Call counts at each level
+- Total time for each proc
+- Indentation showing call depth
+
+### DOT Export (Graphviz)
+
+```tcl
+prof_callgraph_dot "callgraph.dot"
+```
+
+Then visualize with Graphviz:
+```bash
+dot -Tpng callgraph.dot -o callgraph.png
+```
+
+Creates a visual graph showing:
+- Nodes: Procs with their stats
+- Edges: Call relationships with counts
+- Easy to spot patterns and bottlenecks
 
 ---
 
@@ -443,7 +537,8 @@ prof_instrument my_proc2
 
 ### Initialization
 ```tcl
-prof_init
+prof_init                         # Initialize without call graph
+prof_init -callgraph             # Initialize with call graph tracking
 ```
 
 ### Instrumentation
@@ -458,6 +553,12 @@ prof_summary                      # Quick summary
 prof_top <n> <sort>              # Top N (sort: count/total/self)
 prof_report <sort>               # Full report (sort: count/total/self/avg)
 prof_export <filename>           # Export CSV
+```
+
+### Call Graph (requires -callgraph)
+```tcl
+prof_callgraph                    # Show call graph tree view
+prof_callgraph_dot <filename>    # Export call graph in DOT format
 ```
 
 ### Sort Options

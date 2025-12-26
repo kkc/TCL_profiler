@@ -19,17 +19,31 @@ namespace eval ::profiler {
     # Start time for each call
     variable start_times
     array set start_times {}
+
+    # Call graph tracking (optional, disabled by default)
+    variable callgraph_enabled 0
+    variable call_graph
+    array set call_graph {}
 }
 
-proc ::profiler::init {} {
+proc ::profiler::init {{enable_callgraph 0}} {
     variable stats
     variable enabled
-    
+    variable callgraph_enabled
+    variable call_graph
+
     array unset stats
     array set stats {}
+    array unset call_graph
+    array set call_graph {}
     set enabled 1
-    
-    puts "Profiler initialized"
+    set callgraph_enabled $enable_callgraph
+
+    if {$enable_callgraph} {
+        puts "Profiler initialized (with call graph tracking)"
+    } else {
+        puts "Profiler initialized"
+    }
 }
 
 proc ::profiler::instrument {proc_name} {
@@ -97,6 +111,8 @@ proc ::profiler::exit {proc_name} {
     variable call_stack
     variable start_times
     variable stats
+    variable callgraph_enabled
+    variable call_graph
 
     if {!$enabled} return
 
@@ -119,6 +135,18 @@ proc ::profiler::exit {proc_name} {
     }
     if {$duration > $max} {
         dict set stats($proc_name) max_time $duration
+    }
+
+    # Record call graph (if enabled)
+    # Note: call_stack still contains current proc, so parent is at end-1
+    if {$callgraph_enabled && [llength $call_stack] > 1} {
+        set parent [lindex $call_stack end-1]
+        set key "$parent,$proc_name"
+        if {[info exists call_graph($key)]} {
+            incr call_graph($key)
+        } else {
+            set call_graph($key) 1
+        }
     }
 
     # Remove from call stack
@@ -341,12 +369,12 @@ proc ::profiler::summary {} {
 
 proc ::profiler::export_csv {filename} {
     variable stats
-    
+
     compute_self_time
-    
+
     set fh [open $filename w]
     puts $fh "Proc,Calls,Total(us),Self(us),Avg(us),Min(us),Max(us)"
-    
+
     foreach {proc_name stat_dict} [array get stats] {
         set count [dict get $stat_dict count]
         set total [dict get $stat_dict total_time]
@@ -354,12 +382,183 @@ proc ::profiler::export_csv {filename} {
         set min [dict get $stat_dict min_time]
         set max [dict get $stat_dict max_time]
         set avg [expr {$count > 0 ? $total / $count : 0}]
-        
+
         puts $fh "$proc_name,$count,$total,$self,$avg,$min,$max"
     }
-    
+
     close $fh
     puts "Exported to $filename"
+}
+
+# Build call graph tree structure
+proc ::profiler::build_tree {} {
+    variable call_graph
+    variable stats
+
+    # Find root nodes (procs that are never called by others)
+    set all_children {}
+    set all_parents {}
+
+    foreach key [array names call_graph] {
+        lassign [split $key ","] parent child
+        lappend all_parents $parent
+        lappend all_children $child
+    }
+
+    set all_parents [lsort -unique $all_parents]
+    set all_children [lsort -unique $all_children]
+
+    # Roots are procs that appear as parents but never as children
+    set roots {}
+    foreach parent $all_parents {
+        if {$parent ni $all_children} {
+            lappend roots $parent
+        }
+    }
+
+    # If no roots found, use all procs that have stats but no parents
+    if {[llength $roots] == 0} {
+        foreach {proc_name stat_dict} [array get stats] {
+            if {$proc_name ni $all_children} {
+                lappend roots $proc_name
+            }
+        }
+    }
+
+    return $roots
+}
+
+# Print call graph tree
+proc ::profiler::print_tree {proc_name {prefix ""} {visited {}}} {
+    variable call_graph
+    variable stats
+
+    # Prevent infinite recursion
+    if {$proc_name in $visited} {
+        puts "${prefix}├─ $proc_name (recursive)"
+        return
+    }
+
+    lappend visited $proc_name
+
+    # Get stats for this proc
+    set calls 0
+    set total_ms 0.0
+    if {[info exists stats($proc_name)]} {
+        set calls [dict get $stats($proc_name) count]
+        set total [dict get $stats($proc_name) total_time]
+        set total_ms [format "%.2f" [expr {$total / 1000.0}]]
+    }
+
+    puts "${prefix}├─ $proc_name (${calls} calls, ${total_ms}ms)"
+
+    # Find all children
+    set children {}
+    foreach key [array names call_graph] {
+        lassign [split $key ","] parent child
+        if {$parent eq $proc_name} {
+            lappend children [list $child $call_graph($key)]
+        }
+    }
+
+    # Sort children by call count (descending)
+    set children [lsort -integer -decreasing -index 1 $children]
+
+    # Print children
+    set child_count [llength $children]
+    set i 0
+    foreach child_info $children {
+        lassign $child_info child count
+        incr i
+        if {$i < $child_count} {
+            set new_prefix "${prefix}│  "
+        } else {
+            set new_prefix "${prefix}   "
+        }
+        print_tree $child $new_prefix $visited
+    }
+}
+
+# Display call graph as tree
+proc ::profiler::callgraph_tree {} {
+    variable callgraph_enabled
+    variable call_graph
+
+    if {!$callgraph_enabled} {
+        puts "Call graph tracking is not enabled."
+        puts "Use: prof_init -callgraph"
+        return
+    }
+
+    if {[array size call_graph] == 0} {
+        puts "No call graph data collected."
+        return
+    }
+
+    puts "\n=========================================="
+    puts "Call Graph (Tree View)"
+    puts "=========================================="
+
+    set roots [build_tree]
+
+    if {[llength $roots] == 0} {
+        puts "No root procedures found."
+        return
+    }
+
+    foreach root $roots {
+        print_tree $root ""
+    }
+    puts ""
+}
+
+# Export call graph in DOT format (for Graphviz)
+proc ::profiler::export_dot {filename} {
+    variable callgraph_enabled
+    variable call_graph
+    variable stats
+
+    if {!$callgraph_enabled} {
+        puts "Call graph tracking is not enabled."
+        puts "Use: prof_init -callgraph"
+        return
+    }
+
+    if {[array size call_graph] == 0} {
+        puts "No call graph data collected."
+        return
+    }
+
+    set fh [open $filename w]
+
+    puts $fh "digraph CallGraph {"
+    puts $fh "  rankdir=LR;"
+    puts $fh "  node \[shape=box, style=rounded\];"
+    puts $fh ""
+
+    # Add nodes with statistics
+    foreach {proc_name stat_dict} [array get stats] {
+        set calls [dict get $stat_dict count]
+        set total [dict get $stat_dict total_time]
+        set total_ms [format "%.2f" [expr {$total / 1000.0}]]
+        set label "$proc_name\\n$calls calls\\n${total_ms}ms"
+        puts $fh "  \"$proc_name\" \[label=\"$label\"\];"
+    }
+
+    puts $fh ""
+
+    # Add edges
+    foreach key [array names call_graph] {
+        lassign [split $key ","] parent child
+        set count $call_graph($key)
+        puts $fh "  \"$parent\" -> \"$child\" \[label=\"$count\"\];"
+    }
+
+    puts $fh "}"
+    close $fh
+
+    puts "Call graph exported to $filename (DOT format)"
+    puts "Visualize with: dot -Tpng $filename -o callgraph.png"
 }
 
 # Automatically instrument all user-defined procs
@@ -388,8 +587,12 @@ proc ::profiler::instrument_all {} {
 
 # Export convenience commands to global namespace
 namespace eval :: {
-    proc prof_init {} {
-        ::profiler::init
+    proc prof_init {{args ""}} {
+        if {$args eq "-callgraph"} {
+            ::profiler::init 1
+        } else {
+            ::profiler::init 0
+        }
     }
 
     proc prof_instrument {proc_name} {
@@ -415,6 +618,14 @@ namespace eval :: {
     proc prof_export {file} {
         ::profiler::export_csv $file
     }
+
+    proc prof_callgraph {} {
+        ::profiler::callgraph_tree
+    }
+
+    proc prof_callgraph_dot {file} {
+        ::profiler::export_dot $file
+    }
 }
 
 puts "=============================================="
@@ -422,7 +633,8 @@ puts "Tcl Profiler Loaded Successfully"
 puts "=============================================="
 puts ""
 puts "Available Commands:"
-puts "  prof_init                  - Initialize profiler"
+puts "  prof_init ?-callgraph?     - Initialize profiler"
+puts "                               -callgraph: enable call graph tracking"
 puts "  prof_instrument <proc>     - Instrument a specific proc"
 puts "  prof_instrument_all        - Instrument all user procs"
 puts "  prof_report ?sort?         - Show full report"
@@ -430,11 +642,14 @@ puts "                               sort options: total, self, count, avg"
 puts "  prof_top <n> ?sort?        - Show top N procs"
 puts "  prof_summary               - Show quick summary"
 puts "  prof_export <file>         - Export to CSV"
+puts "  prof_callgraph             - Show call graph (tree view)"
+puts "  prof_callgraph_dot <file>  - Export call graph (DOT format)"
 puts ""
 puts "Quick Start:"
 puts "  1. source your_script.tcl"
-puts "  2. prof_init"
+puts "  2. prof_init               # or: prof_init -callgraph"
 puts "  3. prof_instrument_all"
 puts "  4. # Run your code"
 puts "  5. prof_summary"
+puts "  6. prof_callgraph          # if call graph enabled"
 puts "=============================================="
